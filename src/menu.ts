@@ -1,13 +1,15 @@
-// "Form4API" menu added to the spreadsheet's top bar on open.
-// Phase 1 has only the essentials: Set API Key + About. Phase 2 adds Refresh All.
-
-const PROP_API_KEY_M = 'form4api_key'
+// "Form4API" menu in the spreadsheet's top bar. Attached on every open by the
+// onOpen simple trigger. Apps Script merges all .ts files into one global
+// namespace at runtime, so PROP_API_KEY here resolves to the same constant
+// declared in index.ts.
 
 function onOpen(): void {
   SpreadsheetApp.getUi()
     .createMenu('Form4API')
     .addItem('Set API Key…', 'setApiKey_')
-    .addItem('Clear API Key', 'clearApiKey_')
+    .addItem('Clear API Key', 'clearApiKeyFromMenu_')
+    .addSeparator()
+    .addItem('Refresh All', 'refreshAllFromMenu_')
     .addSeparator()
     .addItem('About', 'showAbout_')
     .addToUi()
@@ -15,7 +17,7 @@ function onOpen(): void {
 
 function setApiKey_(): void {
   const ui = SpreadsheetApp.getUi()
-  const existing = PropertiesService.getDocumentProperties().getProperty(PROP_API_KEY_M)
+  const existing = PropertiesService.getDocumentProperties().getProperty(PROP_API_KEY)
   const prompt = existing
     ? 'API key is already set. Paste a new one to replace it, or Cancel to keep the current key.'
     : 'Paste your Form4API key (starts with fapi_ or smk_). Get one free at https://form4api.com'
@@ -28,19 +30,36 @@ function setApiKey_(): void {
     ui.alert('No key entered. Try again from the Form4API menu.')
     return
   }
-  PropertiesService.getDocumentProperties().setProperty(PROP_API_KEY_M, key)
+  PropertiesService.getDocumentProperties().setProperty(PROP_API_KEY, key)
   ui.alert('API key saved. Try =FORM4API_TX("AAPL") in any cell.')
 }
 
-function clearApiKey_(): void {
-  PropertiesService.getDocumentProperties().deleteProperty(PROP_API_KEY_M)
+function clearApiKeyFromMenu_(): void {
+  PropertiesService.getDocumentProperties().deleteProperty(PROP_API_KEY)
   SpreadsheetApp.getUi().alert('API key cleared.')
+}
+
+function refreshAllFromMenu_(): void {
+  clearCache_()
+  // Force a recalculation of all formulas — flips a hidden property that the
+  // custom functions don't read but Sheets sees as a change to invalidate.
+  SpreadsheetApp.getActive().getRangeList(['A1']).activate()
+  SpreadsheetApp.getUi().alert(
+    'Cached data marked stale. Sheets will refetch on the next recalc — ' +
+      'click into a Form4API cell and press Enter to trigger immediately.',
+  )
 }
 
 function showAbout_(): void {
   SpreadsheetApp.getUi().alert(
-    'Form4API Sheets Add-on (v0.0.1 spike)\n\n' +
-      'Custom functions: =FORM4API_TX(ticker, [limit])\n\n' +
+    'Form4API Sheets Add-on (v0.1.0)\n\n' +
+      'Custom functions:\n' +
+      '  =FORM4API_TX(ticker, [limit], [code])     Free\n' +
+      '  =FORM4API_TX_LATEST(ticker)               Free\n' +
+      '  =FORM4API_INSIDER_TX(cik, [limit])        Free\n' +
+      '  =FORM4API_SENTIMENT(ticker, [months])     Business+\n' +
+      '  =FORM4API_CLUSTER_FLAG(ticker)            Business+\n\n' +
+      'Cached for 1 hour. Refresh All from the menu to invalidate.\n\n' +
       'Docs: https://form4api.com/docs\n' +
       'Source: https://github.com/theodor90/form4api-sheets-addin',
   )
