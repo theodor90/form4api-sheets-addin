@@ -19,8 +19,10 @@ function setApiKey_(): void {
   const ui = SpreadsheetApp.getUi()
   const existing = PropertiesService.getDocumentProperties().getProperty(PROP_API_KEY)
   const prompt = existing
-    ? 'API key is already set. Paste a new one to replace it, or Cancel to keep the current key.'
-    : 'Paste your Form4API key (starts with fapi_ or smk_). Get one free at https://form4api.com'
+    ? 'API key is already set. Paste a new one to replace it, or Cancel to keep the current key.\n\n' +
+      'Heads-up: the key is stored in this sheet. Anyone with edit access can use it (and may consume your quota or hit your rate-limit).'
+    : 'Paste your Form4API key (starts with fapi_ or smk_). Get one free at https://form4api.com\n\n' +
+      'Heads-up: the key is stored in this sheet. Anyone you share edit access with can use it (and may consume your quota or hit your rate-limit). View-only collaborators cannot see or use the key.'
 
   const res = ui.prompt('Form4API — Set API Key', prompt, ui.ButtonSet.OK_CANCEL)
   if (res.getSelectedButton() !== ui.Button.OK) return
@@ -52,11 +54,12 @@ function refreshAllFromMenu_(): void {
 
 function showAbout_(): void {
   SpreadsheetApp.getUi().alert(
-    'Form4API Sheets Add-on (v0.1.0)\n\n' +
+    'Form4API Sheets Add-on (v0.2.0)\n\n' +
       'Custom functions:\n' +
       '  =FORM4API_TX(ticker, [limit], [code])     Free\n' +
       '  =FORM4API_TX_LATEST(ticker)               Free\n' +
       '  =FORM4API_INSIDER_TX(cik, [limit])        Free\n' +
+      '  =FORM4API_RETURNS(ticker, [horizon])      Pro+\n' +
       '  =FORM4API_SENTIMENT(ticker, [months])     Business+\n' +
       '  =FORM4API_CLUSTER_FLAG(ticker)            Business+\n\n' +
       'Cached for 1 hour. Refresh All from the menu to invalidate.\n\n' +

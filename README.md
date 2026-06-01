@@ -2,7 +2,7 @@
 
 Google Sheets add-on for [Form4API](https://form4api.com) — query SEC Form 4 insider trading data with custom spreadsheet functions.
 
-> **Status: Phase 2 — 5 functions live and tested end-to-end.** Phase 1 spike PASSED 2026-06-01 (real data spilled into a real sheet). Phase 2 added 4 more functions + 1-hour caching + plan-gating error path. Next: Phase 3 polish + Google Workspace Marketplace listing per [PLAN_SHEETS_ADDIN.md](https://github.com/theodor90/insiderapi/blob/main/PLAN_SHEETS_ADDIN.md).
+> **Status: Phase 3 — 6 functions live, polish + edge cases fixed.** Phase 1 spike PASSED 2026-06-01 (real data spilled into a real sheet). Phase 2 added 4 more functions + 1-hour caching + plan-gating. Phase 3 added `FORM4API_RETURNS`, fixed apostrophe title-case + cluster-flag window depth, added editor-shares-key warning. Next: Google Workspace Marketplace listing per [PLAN_SHEETS_ADDIN.md](https://github.com/theodor90/insiderapi/blob/main/PLAN_SHEETS_ADDIN.md) Phase 5.
 
 ## Functions
 
@@ -11,6 +11,7 @@ Google Sheets add-on for [Form4API](https://form4api.com) — query SEC Form 4 i
 | `=FORM4API_TX(ticker, [limit], [code])` | Spill of up to 100 recent transactions for the ticker. `code` filter: `P` purchase, `S` sale, `A` award, `M` option exercise, `F` tax withholding, `D` disposition, `G` gift. | Free |
 | `=FORM4API_TX_LATEST(ticker)` | Single most-recent transaction (single-row spill) | Free |
 | `=FORM4API_INSIDER_TX(cik, [limit])` | All transactions for one insider across companies. CIK is auto-padded to the 10-digit canonical form. | Free |
+| `=FORM4API_RETURNS(ticker, [horizon])` | Average post-trade return (1d / 1w / 1m / 3m / 6m, default 3m) across recent open-market P/S transactions. Returns a decimal — `0.0523` = +5.23%. | Pro+ |
 | `=FORM4API_SENTIMENT(ticker, [months])` | Average MSPR-style sentiment score (-100 to +100). 10b5-1 plan trades excluded. | Business+ |
 | `=FORM4API_CLUSTER_FLAG(ticker)` | `BUY` / `SELL` / `BOTH` / empty — direction of recent cluster signals | Business+ |
 
@@ -23,6 +24,7 @@ Transaction spills return 6 columns: `Date | Insider | Code | Shares | Price | V
 =FORM4API_TX("AAPL", 50, "S")       Last 50 Apple sales only
 =FORM4API_TX_LATEST("NVDA")         Most recent NVDA insider filing
 =FORM4API_INSIDER_TX("1214156")     Tim Cook's career trading activity
+=FORM4API_RETURNS("NVDA", "3m")     Average 3-month post-trade return on NVDA insider trades
 =FORM4API_SENTIMENT("AAPL", 6)      6-month average sentiment for Apple
 =FORM4API_CLUSTER_FLAG("CRT")       "BUY" if multiple insiders accumulating
 ```
@@ -99,15 +101,21 @@ This is the intended behaviour — error rendering in Sheets is structured enoug
 
 Sheet-scoped, encrypted at rest by Google, never sent off-Drive. No OAuth handshake required (Apps Script OAuth requires a Cloud Project + verification process; for an API-key auth pattern that the backend already supports, the property approach is dramatically simpler with no UX cost).
 
-**Caveat:** anyone with edit access to the bound sheet can read or replace the stored API key. Phase 3 will add a "Editors can use your API key — share carefully" banner on first set.
+**Caveat:** anyone with edit access to the bound sheet can read or replace the stored API key. The Set API Key prompt surfaces this risk explicitly so the choice is informed at the moment of decision.
 
-## Phase 3 backlog
+## Phase 4 backlog
 
-- `FORM4API_RETURNS(ticker, horizon)` — backend doesn't yet expose an aggregate-returns endpoint; would require either a new endpoint or a per-tx walk + average
-- Apostrophe title-case (`O'brien Deirdre` → `O'Brien Deirdre`) — ~3 line tweak to `titleCaseInsider_`
-- `FORM4API_CLUSTER_FLAG` per-ticker window — raise from 10 to 50 rows so older clusters (like UBCP's 2026-05-28 BUY) don't get paged out
-- Banner on the bound sheet warning editors that they share the API key
-- Google Workspace Marketplace listing (Phase 5 per the main plan)
+- Google Workspace Marketplace listing (Phase 5 per the main plan): privacy policy, ToS link, icon, screenshots, listing copy, brand verification, review wait (~1-3 days)
+- `=FORM4API_HOLDINGS(ticker)` — current top institutional holders from 13F-HR (Business+)
+- `=FORM4API_INST_OWNERSHIP(ticker)` — current quarter AUM + QoQ trend per ticker (the `institutionalOwnership` block we noticed is embedded in every transaction)
+- Excel parallel via Office Add-ins — defer until Sheets shows ≥50 installs
+
+## What shipped in Phase 3
+
+- `=FORM4API_RETURNS(ticker, horizon)` added — uses the embedded `return1d/1w/1m/3m/6m` fields in the `/v1/transactions` response (no backend change needed, just had to probe to confirm)
+- Apostrophe title-case so `O'BRIEN DEIRDRE` renders as `O'Brien Deirdre`
+- `FORM4API_CLUSTER_FLAG` window depth raised from `per_page: 10` to `per_page: 50` — small-cap tickers with one-off cluster signals no longer get paged out by subsequent non-cluster activity
+- Set API Key prompt now warns that anyone with edit access to the sheet can use the key
 
 ## License
 

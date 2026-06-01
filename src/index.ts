@@ -1,4 +1,4 @@
-// Phase 2 — 5 production custom functions + caching + error handling.
+// Phase 3 — 6 production custom functions + caching + error handling.
 // Single file by design: clasp transpiles each .ts file to a separate .gs
 // file but they share one global namespace, so cross-file refs are messy.
 // Keeping everything here trades file count for clarity.
@@ -7,17 +7,14 @@
 //   =FORM4API_TX(ticker, [limit], [code])      Free       — spill of N transactions
 //   =FORM4API_TX_LATEST(ticker)                Free       — single latest transaction row
 //   =FORM4API_INSIDER_TX(cik, [limit])         Free       — spill of one insider's transactions
+//   =FORM4API_RETURNS(ticker, [horizon])       Pro+       — avg post-trade return for ticker
 //   =FORM4API_SENTIMENT(ticker, [months])      Business+  — MSPR-style sentiment score
 //   =FORM4API_CLUSTER_FLAG(ticker)             Business+  — "BUY" / "SELL" / "" / "BOTH"
-//
-// Deferred to Phase 3:
-//   =FORM4API_RETURNS(ticker, horizon)         — backend doesn't yet have an aggregate-returns
-//                                                endpoint; would require per-tx walk + average.
 
 const API_BASE = 'https://api.form4api.com'
 const PROP_API_KEY = 'form4api_key'
 const CACHE_TTL_SECONDS = 3600 // 1 hour
-const UA = 'form4api-sheets-addin/0.1.0'
+const UA = 'form4api-sheets-addin/0.2.0'
 
 // ──────────────────────────────────────────────────────────────────────────────
 // CUSTOM FUNCTIONS (the @customfunction-tagged exports)
@@ -133,9 +130,12 @@ function FORM4API_SENTIMENT(ticker: string, months?: number): number | string {
  */
 function FORM4API_CLUSTER_FLAG(ticker: string): string {
   if (!ticker) throw new Error('FORM4API_CLUSTER_FLAG: pass a ticker like "NVDA"')
+  // per_page=50 (was 10) so older clusters within the window still surface —
+  // small tickers can have non-cluster activity push the cluster row past
+  // the first page (caught with UBCP in Phase 2 smoke test).
   const signals = apiGetCached_<Signal[]>(
     '/v1/signals',
-    { ticker: ticker.toUpperCase(), per_page: 10 },
+    { ticker: ticker.toUpperCase(), per_page: 50 },
     'FORM4API_CLUSTER_FLAG',
   )
   if (!signals || signals.length === 0) return ''
@@ -156,9 +156,58 @@ function FORM4API_CLUSTER_FLAG(ticker: string): string {
   return ''
 }
 
+/**
+ * Average post-trade return for a ticker over a given horizon. Aggregated over
+ * the most recent open-market transactions whose returns have been computed.
+ *
+ * @param {string} ticker   Stock symbol, e.g. "AAPL"
+ * @param {string} horizon  "1d" | "1w" | "1m" | "3m" | "6m" — default "3m"
+ * @return                  Average return as a decimal (0.0523 = +5.23%)
+ *                          or "No returns data" if none of the rows have the field
+ * @customfunction
+ */
+function FORM4API_RETURNS(ticker: string, horizon?: string): number | string {
+  if (!ticker) throw new Error('FORM4API_RETURNS: pass a ticker like "AAPL"')
+  const h = String(horizon || '3m').toLowerCase()
+  const field = RETURNS_FIELD_MAP[h]
+  if (!field) {
+    throw new Error('FORM4API_RETURNS: horizon must be one of 1d, 1w, 1m, 3m, 6m')
+  }
+  // Restrict to open-market discretionary trades — option exercises (M), tax
+  // withholdings (F), and awards (A) don't have meaningful price-to-return
+  // relationships. The backend computes returns for all transactions but only
+  // the P/S subset is useful for "did the insider's timing pay off" analysis.
+  const txs = apiGetCached_<Transaction[]>(
+    '/v1/transactions',
+    { ticker: ticker.toUpperCase(), per_page: 100 },
+    'FORM4API_RETURNS',
+  )
+  if (!txs || txs.length === 0) return 'No transactions found'
+
+  const values: number[] = []
+  for (let i = 0; i < txs.length; i++) {
+    const t = txs[i] as Transaction & Record<string, unknown>
+    if (t.transactionCode !== 'P' && t.transactionCode !== 'S') continue
+    const r = t[field] as number | null | undefined
+    if (typeof r === 'number' && !isNaN(r)) values.push(r)
+  }
+  if (values.length === 0) return 'No returns data for ' + h
+  const avg = values.reduce(function (a, b) { return a + b }, 0) / values.length
+  // Round to 4 decimal places so Sheets renders as e.g. 0.0523 or 5.23%
+  return Math.round(avg * 10000) / 10000
+}
+
 // ──────────────────────────────────────────────────────────────────────────────
 // SHARED INFRASTRUCTURE
 // ──────────────────────────────────────────────────────────────────────────────
+
+const RETURNS_FIELD_MAP: Record<string, string> = {
+  '1d': 'return1d',
+  '1w': 'return1w',
+  '1m': 'return1m',
+  '3m': 'return3m',
+  '6m': 'return6m',
+}
 
 const TX_HEADER: string[] = ['Date', 'Insider', 'Code', 'Shares', 'Price', 'Value']
 
@@ -338,7 +387,9 @@ function parseDate_(iso: string): Date | string {
 /** Title-case SEC EDGAR insider names. Same logic shape as the frontend
  *  app/lib/titleCase.ts — if any char is lowercase, treat as already-cased
  *  and return verbatim; otherwise lowercase + first-letter-cap each word.
- *  Mid-initials like "D" stay single-letter and get uppercased naturally. */
+ *  Mid-initials like "D" stay single-letter and get uppercased naturally.
+ *  Capitalises letters following an apostrophe so O'BRIEN → O'Brien (not
+ *  O'brien — caught in Phase 2 smoke test). */
 function titleCaseInsider_(name: string): string {
   if (!name) return name
   if (/[a-z]/.test(name)) return name // mixed-case input → trust it
@@ -352,7 +403,10 @@ function titleCaseInsider_(name: string): string {
       if (/^(jr|sr|ii|iii|iv|v|vi|md|phd|cfa|esq)$/i.test(trimmed)) return trimmed.toUpperCase()
       // Single-letter middle initials stay uppercase
       if (trimmed.length === 1) return trimmed.toUpperCase()
-      return trimmed.charAt(0).toUpperCase() + trimmed.slice(1)
+      // Capitalize first letter + any letter immediately after an apostrophe
+      // (O'Brien, D'Angelo, O'Connor — common in surnames)
+      return trimmed.charAt(0).toUpperCase()
+        + trimmed.slice(1).replace(/'([a-z])/g, function (_m, c) { return "'" + (c as string).toUpperCase() })
     })
     .join('')
 }
