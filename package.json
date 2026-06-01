@@ -1,0 +1,20 @@
+{
+  "name": "form4api-sheets-addin",
+  "version": "0.0.1",
+  "private": true,
+  "description": "Google Sheets add-on for Form4API — query SEC Form 4 insider trading data with =FORM4API_TX() custom functions",
+  "license": "MIT",
+  "scripts": {
+    "login": "clasp login",
+    "create": "clasp create --type sheets --title 'Form4API Sheets Add-on'",
+    "push": "clasp push",
+    "pull": "clasp pull",
+    "open": "clasp open",
+    "logs": "clasp logs"
+  },
+  "devDependencies": {
+    "@google/clasp": "^2.4.2",
+    "@types/google-apps-script": "^1.0.83",
+    "typescript": "^5.5.0"
+  }
+}
