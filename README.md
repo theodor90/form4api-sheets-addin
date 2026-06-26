@@ -1,8 +1,8 @@
 # form4api-sheets-addin
 
-Google Sheets add-on for [Form4API](https://form4api.com) — query SEC Form 4 insider trading data with custom spreadsheet functions.
+Google Sheets add-on for [Form4API](https://www.form4api.com) — query SEC Form 4 insider trading data with custom spreadsheet functions.
 
-> **Status: Phase 3 — 6 functions live, polish + edge cases fixed.** Phase 1 spike PASSED 2026-06-01 (real data spilled into a real sheet). Phase 2 added 4 more functions + 1-hour caching + plan-gating. Phase 3 added `FORM4API_RETURNS`, fixed apostrophe title-case + cluster-flag window depth, added editor-shares-key warning. Next: Google Workspace Marketplace listing per [PLAN_SHEETS_ADDIN.md](https://github.com/theodor90/insiderapi/blob/main/PLAN_SHEETS_ADDIN.md) Phase 5.
+> **Status: v0.3.0 — 8 functions live.** Phase 1 spike PASSED 2026-06-01 (real data spilled into a real sheet). Phase 2 added 4 more functions + 1-hour caching + plan-gating. Phase 3 added `FORM4API_RETURNS`, apostrophe title-case, cluster-flag window depth fix, and editor-shares-key warning. v0.3.0 adds `FORM4API_SCORECARD` (insider track record, Pro+) and `FORM4API_HOLDINGS` (13F-HR institutional holders, Business+). Next: Google Workspace Marketplace listing per [PLAN_SHEETS_ADDIN.md](https://github.com/theodor90/insiderapi/blob/main/PLAN_SHEETS_ADDIN.md) Phase 5.
 
 ## Functions
 
@@ -12,8 +12,10 @@ Google Sheets add-on for [Form4API](https://form4api.com) — query SEC Form 4 i
 | `=FORM4API_TX_LATEST(ticker)` | Single most-recent transaction (single-row spill) | Free |
 | `=FORM4API_INSIDER_TX(cik, [limit])` | All transactions for one insider across companies. CIK is auto-padded to the 10-digit canonical form. | Free |
 | `=FORM4API_RETURNS(ticker, [horizon])` | Average post-trade return (1d / 1w / 1m / 3m / 6m, default 3m) across recent open-market P/S transactions. Returns a decimal — `0.0523` = +5.23%. | Pro+ |
+| `=FORM4API_SCORECARD(cik)` | 2-column labelled table: hit rate, avg/median 3m & 6m return, scored-buy count, sample-sufficiency flag, last trade date, methodology. Returns are decimals — format as % if preferred. Shows `Sample Sufficient: No` when fewer than 5 matured buys exist. | Pro+ |
 | `=FORM4API_SENTIMENT(ticker, [months])` | Average MSPR-style sentiment score (-100 to +100). 10b5-1 plan trades excluded. | Business+ |
 | `=FORM4API_CLUSTER_FLAG(ticker)` | `BUY` / `SELL` / `BOTH` / empty — direction of recent cluster signals | Business+ |
+| `=FORM4API_HOLDINGS(ticker)` | Top 10 institutional holders from the latest 13F-HR filings. 4-column spill: Manager \| Shares \| Value (USD) \| Quarter. | Business+ |
 
 Transaction spills return 6 columns: `Date | Insider | Code | Shares | Price | Value`. Dates are parsed to real Date objects so Sheets formats them natively (`5/8/2026`). Insider names are title-cased from EDGAR's ALL-CAPS source.
 
@@ -77,7 +79,7 @@ Reload the tab — a **Form4API** menu appears in the top bar.
 
 ### 7. Set your API key
 
-In the sheet: **Form4API → Set API Key…** → paste a key from your [Form4API dashboard](https://form4api.com/dashboard). Stored in `PropertiesService.getDocumentProperties()` — sheet-scoped, encrypted at rest by Google.
+In the sheet: **Form4API → Set API Key…** → paste a key from your [Form4API dashboard](https://www.form4api.com/dashboard). Stored in `PropertiesService.getDocumentProperties()` — sheet-scoped, encrypted at rest by Google.
 
 ### 8. First-cell test
 
@@ -89,13 +91,16 @@ Google will ask you to authorise the script's OAuth scopes on first call. Click 
 
 ## Plan-gating UX
 
-When a Free-tier key calls a Business+ function (`=FORM4API_SENTIMENT`, `=FORM4API_CLUSTER_FLAG`), the cell shows `#ERROR!` with a hover tooltip:
+Plans: **Free** (limited daily quota), **Starter $19/mo** (7,500 req/day), **Pro** (scorecard + returns), **Business** (all functions). When a key's plan is too low, the cell shows `#ERROR!` with a hover tooltip, e.g.:
 
 ```
-This function requires the Business plan. Upgrade at https://form4api.com/dashboard/billing
+This function requires the Business plan. Upgrade at https://www.form4api.com/dashboard/billing
 ```
 
-This is the intended behaviour — error rendering in Sheets is structured enough that users can read the upgrade path inline. Free-tier functions degrade gracefully when called from a key that's run out of daily quota (`429 → Rate limited. Retry after N seconds`).
+- `=FORM4API_SCORECARD` and `=FORM4API_RETURNS` → require Pro or higher
+- `=FORM4API_SENTIMENT`, `=FORM4API_CLUSTER_FLAG`, `=FORM4API_HOLDINGS` → require Business or higher
+
+This is the intended behaviour — error rendering in Sheets is structured enough that users can read the upgrade path inline. Free/Starter-tier functions degrade gracefully when a key's daily quota is exhausted (`429 → Rate limited. Retry after N seconds`).
 
 ## Why `PropertiesService` for auth
 
@@ -106,9 +111,15 @@ Sheet-scoped, encrypted at rest by Google, never sent off-Drive. No OAuth handsh
 ## Phase 4 backlog
 
 - Google Workspace Marketplace listing (Phase 5 per the main plan): privacy policy, ToS link, icon, screenshots, listing copy, brand verification, review wait (~1-3 days)
-- `=FORM4API_HOLDINGS(ticker)` — current top institutional holders from 13F-HR (Business+)
 - `=FORM4API_INST_OWNERSHIP(ticker)` — current quarter AUM + QoQ trend per ticker (the `institutionalOwnership` block we noticed is embedded in every transaction)
 - Excel parallel via Office Add-ins — defer until Sheets shows ≥50 installs
+
+## What shipped in v0.3.0
+
+- `=FORM4API_SCORECARD(cik)` — insider track-record scorecard. Calls `GET /v1/insiders/{cik}/scorecard` (Pro+). Spills a 14-row × 2-column labelled table with hit rate, avg/median 3m & 6m returns, scored-buy counts, sample-sufficiency flags, last trade date, and methodology. Returns kept as fractions (format cells as % in Sheets).
+- `=FORM4API_HOLDINGS(ticker)` — top 10 institutional holders from 13F-HR. Calls `GET /v1/holdings?ticker=...` (Business+). Spills Manager | Shares | Value (USD) | Quarter (up to 10 rows).
+- All URLs updated to canonical `www.form4api.com`.
+- Plan-gating section updated to mention Starter ($19/mo) tier.
 
 ## What shipped in Phase 3
 
