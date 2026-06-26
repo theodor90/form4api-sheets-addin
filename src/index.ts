@@ -1,4 +1,4 @@
-// Phase 3 — 6 production custom functions + caching + error handling.
+// Phase 4 — 8 production custom functions + caching + error handling.
 // Single file by design: clasp transpiles each .ts file to a separate .gs
 // file but they share one global namespace, so cross-file refs are messy.
 // Keeping everything here trades file count for clarity.
@@ -8,13 +8,15 @@
 //   =FORM4API_TX_LATEST(ticker)                Free       — single latest transaction row
 //   =FORM4API_INSIDER_TX(cik, [limit])         Free       — spill of one insider's transactions
 //   =FORM4API_RETURNS(ticker, [horizon])       Pro+       — avg post-trade return for ticker
+//   =FORM4API_SCORECARD(cik)                   Pro+       — insider track-record scorecard table
 //   =FORM4API_SENTIMENT(ticker, [months])      Business+  — MSPR-style sentiment score
 //   =FORM4API_CLUSTER_FLAG(ticker)             Business+  — "BUY" / "SELL" / "" / "BOTH"
+//   =FORM4API_HOLDINGS(ticker)                 Business+  — top 10 institutional holders (13F-HR)
 
 const API_BASE = 'https://api.form4api.com'
 const PROP_API_KEY = 'form4api_key'
 const CACHE_TTL_SECONDS = 3600 // 1 hour
-const UA = 'form4api-sheets-addin/0.2.0'
+const UA = 'form4api-sheets-addin/0.3.0'
 
 // ──────────────────────────────────────────────────────────────────────────────
 // CUSTOM FUNCTIONS (the @customfunction-tagged exports)
@@ -197,6 +199,71 @@ function FORM4API_RETURNS(ticker: string, horizon?: string): number | string {
   return Math.round(avg * 10000) / 10000
 }
 
+/**
+ * Track-record scorecard for one insider (Pro+).
+ *
+ * Calls GET /v1/insiders/{cik}/scorecard. Requires at least 5 matured
+ * discretionary open-market buys — when sampleSufficient is "No", the
+ * return fields will be empty (null from API); do not infer signal.
+ *
+ * @param {string} cik   Insider CIK (e.g. "1214128" for Tim Cook). Leading zeros optional.
+ * @return               2-column labelled table: Metric | Value.
+ *                       Returns are decimals (0.112 = +11.2%); format cells as % if preferred.
+ * @customfunction
+ */
+function FORM4API_SCORECARD(cik: string): unknown[][] {
+  if (!cik) throw new Error('FORM4API_SCORECARD: pass an insider CIK like "1214128"')
+  const paddedCik = padCik_(cik)
+  const sc = apiGetCached_<ScorecardResponse>(
+    `/v1/insiders/${encodeURIComponent(paddedCik)}/scorecard`,
+    {},
+    'FORM4API_SCORECARD',
+  )
+  if (!sc) return [['No scorecard data', '']]
+
+  // Returns arrive as fractions (0.112 = +11.2%) — kept as-is so the user
+  // can apply Sheets percentage formatting, consistent with FORM4API_RETURNS.
+  const na = (v: number | null | undefined): number | string => (typeof v === 'number' ? v : '')
+  return [
+    ['Metric', 'Value'],
+    ['Insider', sc.insiderName ?? ''],
+    ['Hit Rate 3m', na(sc.hitRate3m)],
+    ['Avg Return 3m', na(sc.avgReturn3m)],
+    ['Median Return 3m', na(sc.medianReturn3m)],
+    ['Buys Scored 3m', sc.scoredBuyCount ?? ''],
+    ['Sample Sufficient 3m', sc.sampleSufficient === true ? 'Yes' : 'No'],
+    ['Hit Rate 6m', na(sc.hitRate6m)],
+    ['Avg Return 6m', na(sc.avgReturn6m)],
+    ['Median Return 6m', na(sc.medianReturn6m)],
+    ['Buys Scored 6m', sc.scoredBuyCount6m ?? ''],
+    ['Sample Sufficient 6m', sc.sampleSufficient6m === true ? 'Yes' : 'No'],
+    ['Last Trade', sc.lastTradeAt ? parseDate_(sc.lastTradeAt) : ''],
+    ['Methodology', sc.methodology ?? ''],
+  ]
+}
+
+/**
+ * Top institutional holders of a ticker from 13F-HR filings (Business+).
+ *
+ * Calls GET /v1/holdings?ticker=... and returns the first 10 rows (one position
+ * per manager per quarter — aggregates the manager field, not the sub-manager
+ * attribution rows that Berkshire-style filers produce).
+ *
+ * @param {string} ticker   Stock symbol, e.g. "AAPL"
+ * @return                  4-column spill: Manager | Shares | Value (USD) | Quarter
+ * @customfunction
+ */
+function FORM4API_HOLDINGS(ticker: string): unknown[][] {
+  if (!ticker) throw new Error('FORM4API_HOLDINGS: pass a ticker like "AAPL"')
+  const holdings = apiGetCached_<Holding[]>(
+    '/v1/holdings',
+    { ticker: ticker.toUpperCase(), per_page: 10 },
+    'FORM4API_HOLDINGS',
+  )
+  if (!holdings || holdings.length === 0) return [['No holdings data', '', '', '']]
+  return [HOLDINGS_HEADER, ...holdings.map(holdingRow_)]
+}
+
 // ──────────────────────────────────────────────────────────────────────────────
 // SHARED INFRASTRUCTURE
 // ──────────────────────────────────────────────────────────────────────────────
@@ -210,6 +277,7 @@ const RETURNS_FIELD_MAP: Record<string, string> = {
 }
 
 const TX_HEADER: string[] = ['Date', 'Insider', 'Code', 'Shares', 'Price', 'Value']
+const HOLDINGS_HEADER: string[] = ['Manager', 'Shares', 'Value (USD)', 'Quarter']
 
 interface Transaction {
   transactionDate: string
@@ -236,6 +304,38 @@ interface SentimentResponse {
   [k: string]: unknown
 }
 
+// Response from GET /v1/insiders/{cik}/scorecard (Pro+).
+// Null fields occur when sampleSufficient / sampleSufficient6m is false
+// (fewer than 5 matured discretionary open-market buys available).
+interface ScorecardResponse {
+  insiderCik: string
+  insiderName: string
+  scoredBuyCount: number | null
+  sampleSufficient: boolean
+  hitRate3m: number | null
+  avgReturn3m: number | null
+  medianReturn3m: number | null
+  scoredBuyCount6m: number | null
+  sampleSufficient6m: boolean
+  hitRate6m: number | null
+  avgReturn6m: number | null
+  medianReturn6m: number | null
+  lastTradeAt: string | null
+  methodology: string | null
+}
+
+// One row from GET /v1/holdings (Business+).
+interface Holding {
+  manager: string
+  managerCik: string
+  reportPeriod: string
+  issuerName: string
+  ticker: string | null
+  cusip: string
+  value: number
+  shares: number
+}
+
 /** Format one Transaction as a row matching TX_HEADER. */
 function transactionRow_(t: Transaction): unknown[] {
   return [
@@ -245,6 +345,16 @@ function transactionRow_(t: Transaction): unknown[] {
     t.sharesAmount,
     t.pricePerShare ?? '',
     t.totalValue ?? '',
+  ]
+}
+
+/** Format one Holding as a row matching HOLDINGS_HEADER. */
+function holdingRow_(h: Holding): unknown[] {
+  return [
+    h.manager,
+    h.shares,
+    h.value,
+    h.reportPeriod ? parseDate_(h.reportPeriod) : '',
   ]
 }
 
@@ -301,11 +411,11 @@ function apiGetLive_<T>(path: string, params: Record<string, string | number>): 
     try {
       const parsed = JSON.parse(body) as { error?: { code?: string; message?: string } }
       const msg = parsed.error?.message ?? 'This function requires a higher plan.'
-      throw new Error(`${msg} Upgrade at https://form4api.com/dashboard/billing`)
+      throw new Error(`${msg} Upgrade at https://www.form4api.com/dashboard/billing`)
     } catch (e) {
       // already an Error from the throw above — re-throw verbatim
       if (e instanceof Error && e.message.indexOf('Upgrade at') >= 0) throw e
-      throw new Error('This function requires a higher plan. Upgrade at https://form4api.com/dashboard/billing')
+      throw new Error('This function requires a higher plan. Upgrade at https://www.form4api.com/dashboard/billing')
     }
   }
   if (code === 429) {
@@ -314,7 +424,7 @@ function apiGetLive_<T>(path: string, params: Record<string, string | number>): 
     throw new Error(`Rate limited. Retry after ${wait} seconds — bulk recalc may need to be spread out.`)
   }
   if (code >= 500) {
-    throw new Error(`Form4API server error ${code}. Retry in a moment; status: https://form4api.com`)
+    throw new Error(`Form4API server error ${code}. Retry in a moment; status: https://www.form4api.com`)
   }
   throw new Error(`API error ${code}: ${body.slice(0, 200)}`)
 }
@@ -323,7 +433,7 @@ function getApiKey_(): string {
   const key = PropertiesService.getDocumentProperties().getProperty(PROP_API_KEY)
   if (!key) {
     throw new Error(
-      'Form4API key not set. Open the Form4API menu (top bar) → Set API Key. Get one free at https://form4api.com',
+      'Form4API key not set. Open the Form4API menu (top bar) → Set API Key. Get one free at https://www.form4api.com',
     )
   }
   return key
@@ -425,8 +535,11 @@ function clearCache_(): void {
       'FORM4API_TX',
       'FORM4API_TX_LATEST',
       'FORM4API_INSIDER_TX',
+      'FORM4API_RETURNS',
+      'FORM4API_SCORECARD',
       'FORM4API_SENTIMENT',
       'FORM4API_CLUSTER_FLAG',
+      'FORM4API_HOLDINGS',
     ]
     // No way to enumerate keys; users will see fresh data on next recalc anyway
     // because cache entries TTL out within 1 hour. Documented in menu.ts.
